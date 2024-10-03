@@ -1,17 +1,29 @@
 package main
 
 import (
-	"net/http"
+	"log"
+	"net"
 )
 
 func main() {
-	http.HandleFunc("/", getRoot)
-	err := http.ListenAndServe(":6800", nil)
+	udpAddr, err := net.ResolveUDPAddr("udp", "localhost:6801")
 	if err != nil {
-		panic("Error listening on :6800")
+		log.Fatalln(err)
 	}
+
+	conn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	go handleUDP(conn)
+
 }
 
-func getRoot(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusBadGateway)
+func handleUDP(conn *net.UDPConn) {
+	n, addr, err := conn.ReadFromUDP(nil)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	log.Println(n, addr)
 }

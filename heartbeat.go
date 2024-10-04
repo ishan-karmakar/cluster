@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"log"
 	"net"
-	"time"
 )
 
-func handleHeartbeat() {
-	addr, err := net.ResolveUDPAddr("udp", HEARTBEAT_ADDR)
+func initHeartbeat() {
+	addr, err := net.ResolveUDPAddr("udp", heartbeatPort)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -18,17 +16,17 @@ func handleHeartbeat() {
 		log.Fatalln(err)
 	}
 
-	log.Printf("Heartbeat listening on %s...", HEARTBEAT_ADDR)
+	log.Printf("Heartbeat listening on %s...", heartbeatPort)
 	go handleHeartbeatChecks(conn)
 }
 
 func handleHeartbeatChecks(conn *net.UDPConn) {
 	for {
-		_, addr, err := conn.ReadFromUDP(nil)
+		_, addr, err := conn.ReadFrom(nil)
 		if err != nil {
 			log.Fatalln(err)
 		}
-		_, err = conn.WriteToUDP([]byte("UP"), addr)
+		_, err = conn.WriteTo([]byte("UP"), addr)
 		if err != nil {
 			log.Fatalln(err)
 		}
@@ -37,21 +35,21 @@ func handleHeartbeatChecks(conn *net.UDPConn) {
 }
 
 func isNodeUp(node net.Conn) bool {
-	for i := 0; i < NUM_RETRIES; i++ {
-		if func() bool {
-			var response [2]byte
-			node.Write([]byte{})
-			node.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-			_, err := node.Read(response[0:])
-			if err != nil {
-				time.Sleep(50 * time.Millisecond) // Connection refused
-				return false
-			}
+	// response := make([]byte, 2)
+	// for i := 0; i < NUM_RETRIES; i++ {
+	// 	if func() bool {
+	// 		node.Write([]byte{})
+	// 		node.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	// 		_, err := node.Read(response[0:])
+	// 		if err != nil {
+	// 			time.Sleep(50 * time.Millisecond) // Connection refused
+	// 			return false
+	// 		}
 
-			return bytes.Equal(response[0:], []byte("UP"))
-		}() {
-			return true
-		}
-	}
+	// 		return bytes.Equal(response[0:], []byte("UP"))
+	// 	}() {
+	// 		return true
+	// 	}
+	// }
 	return false
 }

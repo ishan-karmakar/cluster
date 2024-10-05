@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
+	"strings"
 )
 
 func initInternalComs() {
@@ -27,14 +29,15 @@ func handleInternalComs(conn net.Listener) {
 }
 
 func handleInternalMessage(c net.Conn) {
-	log.Printf("Received connection from %s\n", c.RemoteAddr())
+	// log.Printf("Received connection from %s\n", c.RemoteAddr())
 	buffer := make([]byte, 64)
 	for {
 		l, err := c.Read(buffer)
 		if err != nil {
 			log.Fatalln(err)
 		}
-		switch string(buffer[:l]) {
+		action := string(buffer[:l])
+		switch action {
 		case "STATUS":
 			c.Write([]byte("OK"))
 
@@ -42,14 +45,30 @@ func handleInternalMessage(c net.Conn) {
 			if leader != nil {
 				log.Fatalln("Received REG while not leader")
 			}
-			var old_nodes string
+			old_nodes := strconv.Itoa(len(nodes))
+			ip := strings.Split(c.RemoteAddr().String(), ":")[0]
 			for _, node := range nodes {
-				old_nodes += fmt.Sprintf("%s ", node.RemoteAddr())
-				node.Write([]byte(fmt.Sprintf("ADD %s", c.RemoteAddr())))
+				old_nodes += " " + node.address
+				node.conn.Write([]byte(fmt.Sprintf("ADD %s", ip)))
 			}
-			nodes = append(nodes, c)
+			nodes = append(nodes, Node{
+				conn:    c,
+				address: ip,
+			})
 			c.Write([]byte(old_nodes))
-			log.Printf("Registered new node (%s)\n", c.RemoteAddr())
+			log.Printf("Registered new node (%s)\n", ip)
+		}
+
+		if strings.HasPrefix(action, "ADD ") {
+			if leader == nil {
+				log.Fatalln("Received ADD on leader")
+			}
+			node := strings.Fields(action)[1]
+			nodes = append(nodes, Node{
+				address: node,
+				conn:    nil,
+			})
+			log.Println("Added new node to list")
 		}
 	}
 }

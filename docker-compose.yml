@@ -4,4 +4,4 @@ services:
   
   node2:
     build: .
-    command: node1:6801
+    command: node1

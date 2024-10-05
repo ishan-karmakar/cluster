@@ -13,26 +13,24 @@ type Node struct {
 	conn    net.Conn
 }
 
-var leader net.Conn = nil
+var leader *net.TCPConn = nil
+var next string
 var nodes []Node
 
 func main() {
-	go initialize()
-	initInternalComs()
-}
-
-func initialize() {
 	if len(os.Args) == 1 {
 		log.Println("We are the leader")
+		initInternalComs()
 	} else {
 		log.Printf("%s is the leader\n", os.Args[1])
 		var err error
-		leader, err = net.Dial("tcp", os.Args[1]+internalComPort)
-		for err != nil {
-			log.Println("Retry leader connection again...")
-			leader, err = net.Dial("tcp", os.Args[1]+internalComPort)
+		addr, err := net.ResolveTCPAddr("tcp", os.Args[1]+internalComPort)
+		if err != nil {
+			log.Fatalln(err)
 		}
-		log.Println("Connected to leader!")
-		leader.Write([]byte("REG"))
+		for ok := true; ok; ok = err != nil {
+			leader, err = net.DialTCP("tcp", nil, addr)
+		}
+		handleInternalMessage(leader)
 	}
 }

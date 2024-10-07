@@ -18,22 +18,25 @@ const (
 	CANDIDATE = iota
 )
 const ELECTION_TIMEOUT_MIN = 300
-const ELECTION_TIMEOUT_MAX = 1000
+const ELECTION_TIMEOUT_MAX = 301
+const REELECTION_TIMEOUT = 1500
 
 var term = 0
 var lastLogIndex = 0
 var lastLogTerm = 0
 var numVotes int
 var alreadyVoted = false
-var lastHearbeat time.Time
 var electionTimeout time.Duration
 var peers = make(map[string]*net.TCPConn)
 var role = FOLLOWER
+var heartbeatEvent = make(chan struct{})
+var leaderEvent = make(chan struct{})
 
 // {"Type":"RequestVote","Body":{"LastLogIndex":0,"LastLogTerm":0,"Candidate":"127.0.0.1"}}
 func main() {
 	initConns()
 	checkTimeout()
+	initServer()
 }
 
 func initConns() {
@@ -59,11 +62,45 @@ func getConn(peer string) *net.TCPConn {
 }
 
 func checkTimeout() {
-	lastHearbeat = time.Now()
 	setElectionTimeout()
 	go func() {
-		time.Sleep(50 * time.Millisecond)
-		if (time.Now() - lastHearbeat)
+		for {
+			select {
+			case <-time.After(electionTimeout):
+				log.Println("Election timeout expired")
+				setElectionTimeout()
+				if !alreadyVoted {
+					role = CANDIDATE
+					log.Println("Switching to candidate")
+					for peer := range peers {
+						c := getConn(peer)
+						go candidateHandleMessage(c)
+						sendRPC(RequestVote{
+							Term:         term,
+							LastLogIndex: lastLogIndex,
+							LastLogTerm:  lastLogTerm,
+						}, c)
+					}
+				}
+				select {
+				case <-time.After(time.Duration((REELECTION_TIMEOUT - electionTimeout.Milliseconds())) * time.Millisecond):
+				case <-leaderEvent:
+					log.Println("We are the leader")
+					role = LEADER
+				case <-heartbeatEvent:
+					log.Println("We are a follower")
+					role = FOLLOWER
+				}
+			case <-heartbeatEvent:
+				log.Println("Received heartbeat")
+			}
+			// time.Sleep(50 * time.Millisecond)
+			// log.Println(time.Now().Sub(lastHeartbeat))
+			// if time.Now().Sub(lastHeartbeat) >= electionTimeout {
+			// 	log.Println("Election timeout expired, holding election...")
+			// 	holdElection()
+			// }
+		}
 	}()
 }
 
@@ -72,21 +109,30 @@ func setElectionTimeout() {
 }
 
 func holdElection() {
-	if !alreadyVoted {
-		numVotes = 0 // Vote for self
-		term++
-		role = CANDIDATE
-		msg := RequestVote{
+	if alreadyVoted {
+		return
+	}
+
+	term++
+	log.Println("Switching to candidate")
+	role = CANDIDATE
+	for peer := range peers {
+		c := getConn(peer)
+		go candidateHandleMessage(c)
+		sendRPC(RequestVote{
 			Term:         term,
 			LastLogIndex: lastLogIndex,
 			LastLogTerm:  lastLogTerm,
-		}
-		log.Println("I am a candidate")
-		for peer := range peers {
-			c := getConn(peer)
-			go candidateHandleMessage(c)
-			sendRPC(msg, c)
-		}
+		}, c)
+	}
+
+	for role == CANDIDATE && numVotes < len(peers)/2 {
+		// if time.Now().Sub(lastHeartbeat) >= REELECTION_TIMEOUT {
+		// 	log.Println("Reelection timeout expired, time to hold another election")
+		// 	setElectionTimeout()
+		// 	role = FOLLOWER
+		// 	return
+		// }
 	}
 }
 
@@ -115,10 +161,10 @@ func candidateHandleMessage(c *net.TCPConn) {
 	defer c.Close()
 
 	rpc := getRPC(c).(RequestVoteResponse)
-	log.Println(rpc.VoteGranted)
 	if rpc.VoteGranted {
-		if numVotes >= len(peers)/2+1 && role == CANDIDATE { // serverHandleMessage could put us back into follower
-			log.Println("We are the leader now")
+		numVotes++
+		if numVotes >= len(peers)/2 {
+			role = LEADER
 		}
 	}
 }
@@ -140,18 +186,26 @@ func serverHandleMessage(c *net.TCPConn) {
 		switch rpc := rpc.(type) {
 		case RequestVote:
 			log.Println("Received RequestVote")
-			if (role == CANDIDATE && rpc.Term >= term) || (role == FOLLOWER && !alreadyVoted && rpc.LastLogTerm >= lastLogTerm) {
-				role = FOLLOWER // Recognize other candidate as legitimate if applicable
-				alreadyVoted = true
-				sendRPC(RequestVoteResponse{
-					Term:        term,
-					VoteGranted: true,
-				}, c)
-			} else {
+			if rpc.Term < term || (rpc.Term == term && alreadyVoted) {
 				sendRPC(RequestVoteResponse{
 					Term:        term,
 					VoteGranted: false,
 				}, c)
+				break
+			} else if rpc.Term > term {
+				term = rpc.Term
+			}
+			if lastLogTerm > rpc.LastLogTerm || (lastLogTerm == rpc.LastLogTerm && lastLogIndex > rpc.LastLogIndex) {
+				sendRPC(RequestVoteResponse{
+					Term:        term,
+					VoteGranted: false,
+				}, c)
+			} else {
+				sendRPC(RequestVoteResponse{
+					Term:        term,
+					VoteGranted: true,
+				}, c)
+				heartbeatEvent <- struct{}{}
 			}
 		}
 	}

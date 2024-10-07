@@ -8,8 +8,13 @@ type RPC struct {
 }
 
 type RequestVote struct {
-	CurrentTerm  int
+	Term         int
 	LastLogIndex int
 	LastLogTerm  int
-	Candidate    string
+}
+
+// If vote was granted or not
+type RequestVoteResponse struct {
+	Term        int
+	VoteGranted bool
 }

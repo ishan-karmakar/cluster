@@ -1,11 +1,12 @@
 services:
   node1:
     build: .
+    command: node2
   
   node2:
     build: .
     command: node1
   
-  node3:
-    build: .
-    command: node1
+  # node3:
+  #   build: .
+  #   command: node1

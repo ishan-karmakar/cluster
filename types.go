@@ -4,17 +4,17 @@ import "encoding/json"
 
 type RPC struct {
 	Type string
+	Term int
 	Body json.RawMessage
 }
 
 type RequestVote struct {
-	Term         int
 	LastLogIndex int
 	LastLogTerm  int
 }
 
 // If vote was granted or not
-type RequestVoteResponse struct {
-	Term        int
-	VoteGranted bool
+type RequestVoteResponse bool
+
+type AppendEntries struct {
 }

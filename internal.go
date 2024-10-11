@@ -4,7 +4,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"net/http"
 )
 
 func initInternalServer() {
@@ -26,14 +25,6 @@ func initInternalServer() {
 
 		go handleConnection(c)
 	}
-}
-
-func initExternalServer() {
-	http.HandleFunc("/", handleRoot)
-}
-
-func handleRoot(writer http.ResponseWriter, req *http.Request) {
-	writer.Write([]byte("Hello World"))
 }
 
 func handleConnection(c *net.TCPConn) {

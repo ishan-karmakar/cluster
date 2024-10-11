@@ -7,8 +7,6 @@ import (
 )
 
 func checkHeartbeat() {
-	setElectionTimeout()
-	log.Println("Election timeout:", electionTimeout)
 	for {
 		if role == LEADER {
 			for peer := range peers {
@@ -20,22 +18,17 @@ func checkHeartbeat() {
 			select {
 			case <-heartbeatEvent:
 			case <-time.After(electionTimeout):
-				alreadyVoted = false
-				numVotes = 0
-				log.Println("Election timeout expired")
 				handleElection()
 			}
 		} else {
 			select {
 			case <-leaderEvent:
+				log.Println("We are leader...")
 				numVotes = 0
 				role = LEADER
 				go initExternalServer()
 
 			case <-time.After(electionTimeout):
-				numVotes = 0
-				alreadyVoted = false
-				log.Println("Election timeout expired again...")
 				handleElection()
 
 			case <-roleChange:
@@ -46,6 +39,9 @@ func checkHeartbeat() {
 }
 
 func handleElection() {
+	numVotes = 0
+	alreadyVoted = false
+	setElectionTimeout()
 	electionTimeout = REELECTION_TIMEOUT*time.Millisecond - electionTimeout
 	if alreadyVoted {
 		return
@@ -76,9 +72,8 @@ func handleCandidateConn(c *net.TCPConn) {
 			roleChange <- struct{}{}
 			return
 		} else if body {
-			log.Println("Received vote")
 			numVotes++
-			if numVotes >= len(peers)/2 {
+			if numVotes >= (len(peers)+1)/2 {
 				leaderEvent <- struct{}{}
 				return
 			}

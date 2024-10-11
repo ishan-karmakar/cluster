@@ -9,6 +9,7 @@ import (
 )
 
 const internalComPort = ":6801"
+const externalServer = ":6800"
 const (
 	LEADER    = iota
 	FOLLOWER  = iota
@@ -34,7 +35,7 @@ var leaderEvent = make(chan struct{})
 func main() {
 	initConns()
 	go checkHeartbeat()
-	initServer()
+	initInternalServer()
 }
 
 func initConns() {

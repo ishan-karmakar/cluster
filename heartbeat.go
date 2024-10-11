@@ -19,8 +19,6 @@ func checkHeartbeat() {
 		} else if role == FOLLOWER {
 			select {
 			case <-heartbeatEvent:
-				log.Println("Received heartbeat")
-
 			case <-time.After(electionTimeout):
 				alreadyVoted = false
 				numVotes = 0
@@ -30,9 +28,9 @@ func checkHeartbeat() {
 		} else {
 			select {
 			case <-leaderEvent:
-				log.Println("We are the leader now")
 				numVotes = 0
 				role = LEADER
+				go initExternalServer()
 
 			case <-time.After(electionTimeout):
 				numVotes = 0

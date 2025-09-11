@@ -1,0 +1,15 @@
+services:
+  raft-node-1:
+    build: .
+    environment:
+      NODE_ID: 0
+
+  raft-node-2:
+    build: .
+    environment:
+      NODE_ID: 1
+
+  raft-node-3:
+    build: .
+    environment:
+      NODE_ID: 2

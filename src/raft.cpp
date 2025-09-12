@@ -1,12 +1,23 @@
 #include "raft.h"
-#include <spdlog/spdlog.h>
 #include <netdb.h>
 #include <magic_enum/magic_enum.hpp>
+#include <spdlog/spdlog.h>
 
 using namespace raft;
 
 Node::Node(std::vector<std::string> peers)
     : ip{get_ip()}, role(Role::Follower), currentTerm(0), votedFor(-1), serverSock(-1) {
+    // Resolve peer strings to in_addr_t
+    for (const auto& peer : peers) {
+        struct addrinfo hints{}, *res = nullptr;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        if (getaddrinfo(peer.c_str(), nullptr, &hints, &res) == 0 && res) {
+            in_addr_t addr = ((struct sockaddr_in*)res->ai_addr)->sin_addr.s_addr;
+            peerIps.push_back(addr);
+            freeaddrinfo(res);
+        }
+    }
     reset_timeout();
 }
 
@@ -22,7 +33,6 @@ in_addr_t Node::get_ip() {
             return addr;
         }
     }
-    spdlog::critical("Error getting node IP address");
     std::exit(1);
 }
 
@@ -45,25 +55,23 @@ void Node::run() {
 }
 
 void Node::follower_loop() {
-    spdlog::info("Node became follower");
+    spdlog::info("This node is now a follower");
     std::unique_lock<std::mutex> lock(mtx);
     while (role == Role::Follower) {
-        if (cv.wait_until(lock, electionDeadline) == std::cv_status::timeout) {
-            spdlog::trace("Election deadline exceeded");
+        if (cv.wait_until(lock, electionDeadline) == std::cv_status::timeout)
             role = Role::Candidate;
-        }
     }
 }
 
 void Node::candidate_loop() {
-    spdlog::info("Node became candidate");
+    spdlog::info("This node is now a candidate");
     {
         std::lock_guard<std::mutex> lock(mtx);
         currentTerm++;
         votesReceived = 1; // Vote for self
     }
     // Send RequestVote to all peers (except self)
-    Message msg{RequestVote, currentTerm, -1};
+    RequestVoteMessage msg;
     for (auto peerIp : peerIps) {
         // Replace with check for current IP
         if (peerIp != ip) send_msg(peerIp, msg);
@@ -84,16 +92,17 @@ void Node::candidate_loop() {
 }
 
 void Node::leader_loop() {
-    spdlog::info("Node became leader for term {}", currentTerm.load());
+    spdlog::info("This node is now the leader");
     while (role == Role::Leader) {
-        Message msg{AppendEntries, currentTerm, -1};
+        AppendEntriesMessage msg;
         for (const auto& ip : peerIps) send_msg(ip, msg);
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
 }
 
-void Node::send_msg(in_addr_t ip, const Message& msg) {
-    // spdlog::debug("Sending {} to {}", magic_enum::enum_name(msg.type), hostname);
+template <typename T>
+void Node::send_msg(in_addr_t ip, T& msg) {
+    msg.term = currentTerm;
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in dest = { 0 };
     dest.sin_port = htons(5000);
@@ -107,49 +116,51 @@ void Node::listen() {
     serverSock = socket(AF_INET, SOCK_DGRAM, 0);
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(5000); //
+    addr.sin_port = htons(5000);
     addr.sin_addr.s_addr = INADDR_ANY;
     bind(serverSock, (sockaddr*)&addr, sizeof(addr));
     Message msg;
     while (true) {
-        sockaddr_in from;
-        socklen_t fromlen = sizeof(from);
-        if (recvfrom(serverSock, &msg, sizeof(msg), 0, (sockaddr*)&from, &fromlen) > 0)
-            handle_msg(msg, from.sin_addr.s_addr);
+        Message msg;
+        if (recv(serverSock, &msg, sizeof(msg), MSG_PEEK) == 0) continue;
+        std::lock_guard<std::mutex> lock{mtx};
+        if (msg.term > currentTerm) {
+            currentTerm = msg.term;
+            role = Follower;
+            votedFor = 0;
+            reset_timeout();
+        }
+        if (msg.type == RequestVote) handle_request_vote();
+        else if (msg.type == VoteResponse) handle_vote_response();
+        else if (msg.type == AppendEntries) reset_timeout();
+        cv.notify_all();
     }
     close(serverSock);
 }
 
-void Node::handle_msg(const Message& msg, in_addr_t fromIp) {
-    std::lock_guard<std::mutex> lock(mtx);
-    if (msg.term > currentTerm) {
-        currentTerm = msg.term;
-        role = Role::Follower;
-        votedFor = -1;
+void Node::handle_request_vote() {
+    sockaddr_in from;
+    socklen_t fromlen = sizeof(from);
+    RequestVoteMessage msg;
+    if (recvfrom(serverSock, &msg, sizeof(msg), 0, reinterpret_cast<sockaddr*>(&from), &fromlen) == 0) return;
+    if ((!votedFor || votedFor == from.sin_addr.s_addr) && msg.term >= currentTerm) {
+        votedFor = from.sin_addr.s_addr;
         reset_timeout();
+        VoteResponseMessage msg;
+        send_msg(from.sin_addr.s_addr, msg);
     }
-    // spdlog::debug("Received {} from {}", magic_enum::enum_name(msg.type), fromIp);
-    if (msg.type == RequestVote) {
-        if ((votedFor == -1 || votedFor == msg.candidateId) && msg.term >= currentTerm) {
-            votedFor = msg.candidateId;
-            reset_timeout();
-            // Send vote
-            Message voteMsg{VoteResponse, currentTerm, -1, -1};
-            send_msg(fromIp, voteMsg);
-        }
-    } else if (msg.type == VoteResponse) {
-        if (role == Role::Candidate && msg.term == currentTerm) {
-            votesReceived++;
-            cv.notify_all();
-        }
-    } else if (msg.type == AppendEntries) {
-        reset_timeout();
+}
+
+void Node::handle_vote_response() {
+    VoteResponseMessage msg;
+    if (recv(serverSock, &msg, sizeof(msg), 0) == 0) return;
+    if (role == Role::Candidate && msg.term == currentTerm) {
+        votesReceived++;
+        cv.notify_all();
     }
-    cv.notify_all();
 }
 
 void Node::reset_timeout() {
-    spdlog::trace("Resetting election timeout");
-    static std::mt19937 rng(std::random_device{}());
+    static std::mt19937 rng;
     electionDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::uniform_int_distribution<size_t>{300, 500}(rng));
 }

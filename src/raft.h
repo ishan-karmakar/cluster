@@ -30,8 +30,18 @@ enum MessageType {
 struct Message {
     MessageType type;
     int term;
-    int candidateId;
-    int leaderId;
+};
+
+struct RequestVoteMessage : Message {
+    RequestVoteMessage() : Message{RequestVote} {}
+};
+
+struct AppendEntriesMessage : Message {
+    AppendEntriesMessage() : Message{AppendEntries} {}
+};
+
+struct VoteResponseMessage : Message {
+    VoteResponseMessage() : Message{VoteResponse} {}
 };
 
 class Node {
@@ -43,17 +53,23 @@ private:
     void follower_loop();
     void candidate_loop();
     void leader_loop();
-    void send_msg(in_addr_t ip, const Message& msg);
+
+    template <typename T>
+    void send_msg(in_addr_t ip, T& msg);
+
     void listen();
-    void handle_msg(const Message& msg, in_addr_t fromIp);
+
     void reset_timeout();
     static in_addr_t get_ip();
+
+    void handle_request_vote();
+    void handle_vote_response();
 
     in_addr_t ip;
     std::vector<in_addr_t> peerIps;
     std::atomic<Role> role;
     std::atomic<int> currentTerm;
-    std::atomic<int> votedFor;
+    std::atomic<in_addr_t> votedFor;
     std::mutex mtx;
     std::condition_variable cv;
     int serverSock;

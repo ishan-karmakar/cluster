@@ -74,7 +74,7 @@ void Node::candidate_loop() {
     RequestVoteMessage msg;
     for (auto peerIp : peerIps) {
         // Replace with check for current IP
-        if (peerIp != ip) send_msg(peerIp, msg);
+        if (peerIp != ip) send_msg(peerIp, &msg, sizeof(msg));
     }
     reset_timeout();
     std::unique_lock<std::mutex> lock(mtx);
@@ -94,21 +94,21 @@ void Node::candidate_loop() {
 void Node::leader_loop() {
     spdlog::info("This node is now the leader");
     while (role == Role::Leader) {
-        AppendEntriesMessage msg;
-        for (const auto& ip : peerIps) send_msg(ip, msg);
+        auto msg = (AppendEntriesMessage*)::operator new(sizeof(AppendEntriesMessage) + 5);
+        *msg = AppendEntriesMessage{};
+        for (const auto& ip : peerIps) send_msg(ip, msg, sizeof(AppendEntriesMessage) + 5);
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
 }
 
-template <typename T>
-void Node::send_msg(in_addr_t ip, T& msg) {
-    msg.term = currentTerm;
+void Node::send_msg(in_addr_t ip, Message *msg, size_t length) {
+    msg->term = currentTerm;
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in dest = { 0 };
     dest.sin_port = htons(5000);
     dest.sin_family = AF_INET;
     dest.sin_addr.s_addr = ip;
-    sendto(sock, &msg, sizeof(msg), 0, reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest));
+    sendto(sock, msg, length, 0, reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest));
     close(sock);
 }
 
@@ -132,7 +132,7 @@ void Node::listen() {
         }
         if (msg.type == RequestVote) handle_request_vote();
         else if (msg.type == VoteResponse) handle_vote_response();
-        else if (msg.type == AppendEntries) reset_timeout();
+        else if (msg.type == AppendEntries) handle_append_entries();
         cv.notify_all();
     }
     close(serverSock);
@@ -147,7 +147,7 @@ void Node::handle_request_vote() {
         votedFor = from.sin_addr.s_addr;
         reset_timeout();
         VoteResponseMessage msg;
-        send_msg(from.sin_addr.s_addr, msg);
+        send_msg(from.sin_addr.s_addr, &msg, sizeof(msg));
     }
 }
 
@@ -158,6 +158,16 @@ void Node::handle_vote_response() {
         votesReceived++;
         cv.notify_all();
     }
+}
+
+void Node::handle_append_entries() {
+    reset_timeout();
+    AppendEntriesMessage msg;
+    size_t length = sizeof(msg);
+    if (recv(serverSock, &msg, length, MSG_PEEK) == 0) return;
+    length += msg.length;
+    if (recv(serverSock, &msg, length, 0) == 0) return;
+    spdlog::info("AppendEntries: {}, {}", msg.length, msg.data);
 }
 
 void Node::reset_timeout() {

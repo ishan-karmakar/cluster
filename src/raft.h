@@ -24,7 +24,8 @@ enum Role { Follower, Candidate, Leader };
 enum MessageType {
     RequestVote,
     AppendEntries,
-    VoteResponse
+    VoteResponse,
+    CommitValidation
 };
 
 struct Message {
@@ -38,10 +39,17 @@ struct RequestVoteMessage : Message {
 
 struct AppendEntriesMessage : Message {
     AppendEntriesMessage() : Message{AppendEntries} {}
+
+    size_t length;
+    char data[0];
 };
 
 struct VoteResponseMessage : Message {
     VoteResponseMessage() : Message{VoteResponse} {}
+};
+
+struct CommitValidationMessage : Message {
+    CommitValidationMessage() : Message{CommitValidation} {}
 };
 
 class Node {
@@ -54,8 +62,7 @@ private:
     void candidate_loop();
     void leader_loop();
 
-    template <typename T>
-    void send_msg(in_addr_t ip, T& msg);
+    void send_msg(in_addr_t ip, Message *msg, size_t length);
 
     void listen();
 
@@ -64,6 +71,7 @@ private:
 
     void handle_request_vote();
     void handle_vote_response();
+    void handle_append_entries();
 
     in_addr_t ip;
     std::vector<in_addr_t> peerIps;

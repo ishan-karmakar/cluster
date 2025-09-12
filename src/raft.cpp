@@ -1,5 +1,7 @@
 #include "raft.h"
 #include <netdb.h>
+#include <unistd.h>
+#include <random>
 #include <magic_enum/magic_enum.hpp>
 #include <spdlog/spdlog.h>
 
@@ -68,7 +70,7 @@ void Node::candidate_loop() {
     {
         std::lock_guard<std::mutex> lock(mtx);
         currentTerm++;
-        votesReceived = 1; // Vote for self
+        nodesReceived = 1; // Vote for self
     }
     // Send RequestVote to all peers (except self)
     RequestVoteMessage msg;
@@ -84,7 +86,7 @@ void Node::candidate_loop() {
             break;
         }
         // If votes > half, become leader
-        if (votesReceived > (int)peerIps.size() / 2) {
+        if (nodesReceived > peerIps.size() / 2) {
             role = Role::Leader;
             break;
         }
@@ -127,11 +129,11 @@ void Node::listen() {
         if (msg.term > currentTerm) {
             currentTerm = msg.term;
             role = Follower;
-            votedFor = 0;
+            votedFor = std::nullopt;
             reset_timeout();
         }
         if (msg.type == RequestVote) handle_request_vote();
-        else if (msg.type == VoteResponse) handle_vote_response();
+        else if (msg.type == Received) handle_received();
         else if (msg.type == AppendEntries) handle_append_entries();
         cv.notify_all();
     }
@@ -143,21 +145,17 @@ void Node::handle_request_vote() {
     socklen_t fromlen = sizeof(from);
     RequestVoteMessage msg;
     if (recvfrom(serverSock, &msg, sizeof(msg), 0, reinterpret_cast<sockaddr*>(&from), &fromlen) == 0) return;
-    if ((!votedFor || votedFor == from.sin_addr.s_addr) && msg.term >= currentTerm) {
+    if ((!votedFor.load().has_value() || votedFor.load() == from.sin_addr.s_addr) && msg.term >= currentTerm) {
         votedFor = from.sin_addr.s_addr;
         reset_timeout();
-        VoteResponseMessage msg;
+        ReceivedMessage msg;
         send_msg(from.sin_addr.s_addr, &msg, sizeof(msg));
     }
 }
 
-void Node::handle_vote_response() {
-    VoteResponseMessage msg;
-    if (recv(serverSock, &msg, sizeof(msg), 0) == 0) return;
-    if (role == Role::Candidate && msg.term == currentTerm) {
-        votesReceived++;
-        cv.notify_all();
-    }
+void Node::handle_received() {
+    nodesReceived++;
+    cv.notify_all();
 }
 
 void Node::handle_append_entries() {
@@ -166,8 +164,11 @@ void Node::handle_append_entries() {
     size_t length = sizeof(msg);
     if (recv(serverSock, &msg, length, MSG_PEEK) == 0) return;
     length += msg.length;
-    if (recv(serverSock, &msg, length, 0) == 0) return;
-    spdlog::info("AppendEntries: {}, {}", msg.length, msg.data);
+    sockaddr_in from;
+    socklen_t fromlen = sizeof(from);
+    if (recvfrom(serverSock, &msg, length, 0, reinterpret_cast<sockaddr*>(&from), &fromlen) == 0) return;
+    ReceivedMessage received_msg;
+    send_msg(from.sin_addr.s_addr, &received_msg, sizeof(received_msg));
 }
 
 void Node::reset_timeout() {

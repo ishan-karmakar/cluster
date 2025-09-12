@@ -1,20 +1,10 @@
 #pragma once
-#include <string>
-#include <vector>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
 #include <atomic>
-#include <chrono>
-#include <random>
-#include <unordered_map>
-#include <functional>
-#include <iostream>
-#include <sstream>
+#include <thread>
+#include <condition_variable>
+#include <optional>
 #include <netinet/in.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
+#include <vector>
 
 namespace raft {
 
@@ -24,8 +14,7 @@ enum Role { Follower, Candidate, Leader };
 enum MessageType {
     RequestVote,
     AppendEntries,
-    VoteResponse,
-    CommitValidation
+    Received
 };
 
 struct Message {
@@ -44,12 +33,8 @@ struct AppendEntriesMessage : Message {
     char data[0];
 };
 
-struct VoteResponseMessage : Message {
-    VoteResponseMessage() : Message{VoteResponse} {}
-};
-
-struct CommitValidationMessage : Message {
-    CommitValidationMessage() : Message{CommitValidation} {}
+struct ReceivedMessage : Message {
+    ReceivedMessage() : Message{Received} {}
 };
 
 class Node {
@@ -70,19 +55,19 @@ private:
     static in_addr_t get_ip();
 
     void handle_request_vote();
-    void handle_vote_response();
+    void handle_received();
     void handle_append_entries();
 
     in_addr_t ip;
     std::vector<in_addr_t> peerIps;
     std::atomic<Role> role;
     std::atomic<int> currentTerm;
-    std::atomic<in_addr_t> votedFor;
+    std::atomic<std::optional<in_addr_t>> votedFor;
     std::mutex mtx;
     std::condition_variable cv;
     int serverSock;
     std::thread listenerThread;
-    int votesReceived;
+    int nodesReceived;
     std::chrono::steady_clock::time_point electionDeadline;
 };
 

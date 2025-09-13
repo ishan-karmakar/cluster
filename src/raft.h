@@ -53,6 +53,7 @@ private:
 
     void reset_timeout();
     static in_addr_t get_ip();
+    bool is_majority();
 
     void handle_request_vote();
     void handle_received();

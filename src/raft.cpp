@@ -86,7 +86,7 @@ void Node::candidate_loop() {
             break;
         }
         // If votes > half, become leader
-        if (nodesReceived > peerIps.size() / 2) {
+        if (is_majority()) {
             role = Role::Leader;
             break;
         }
@@ -99,8 +99,19 @@ void Node::leader_loop() {
         auto msg = (AppendEntriesMessage*)::operator new(sizeof(AppendEntriesMessage) + 5);
         *msg = AppendEntriesMessage{};
         for (const auto& ip : peerIps) send_msg(ip, msg, sizeof(AppendEntriesMessage) + 5);
+        nodesReceived = 1; // Leader counts itself
+
+        // Wait for majority of ReceivedMessage responses or timeout
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [this] { return is_majority(); });
+
+        // Proceed to next round after waiting
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
+}
+
+bool Node::is_majority() {
+    return nodesReceived > peerIps.size() / 2;
 }
 
 void Node::send_msg(in_addr_t ip, Message *msg, size_t length) {

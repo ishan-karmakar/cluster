@@ -5,6 +5,7 @@
 #include <optional>
 #include <netinet/in.h>
 #include <vector>
+#include <string>
 
 namespace raft {
 
@@ -14,7 +15,8 @@ enum Role { Follower, Candidate, Leader };
 enum MessageType {
     RequestVote,
     AppendEntries,
-    Received
+    Received,
+    AppendEntriesReceived
 };
 
 struct Message {
@@ -26,15 +28,29 @@ struct RequestVoteMessage : Message {
     RequestVoteMessage() : Message{RequestVote} {}
 };
 
+struct LogEntry {
+    int term;
+    std::string command;
+};
+
 struct AppendEntriesMessage : Message {
     AppendEntriesMessage() : Message{AppendEntries} {}
-
-    size_t length;
-    char data[0];
+    int prevLogIndex;
+    int prevLogTerm;
+    int leaderCommit;
+    size_t entryCount;
+    // For simplicity, fixed-size array; in production, use serialization
+    LogEntry entries[10];
 };
 
 struct ReceivedMessage : Message {
     ReceivedMessage() : Message{Received} {}
+};
+
+struct AppendEntriesResponseMessage : Message {
+    AppendEntriesResponseMessage() : Message{AppendEntriesReceived} {}
+    bool success;
+    int matchIndex;
 };
 
 class Node {
@@ -70,6 +86,13 @@ private:
     std::thread listenerThread;
     int nodesReceived;
     std::chrono::steady_clock::time_point electionDeadline;
+
+    // Log replication state
+    std::vector<LogEntry> log;
+    int commitIndex = 0;
+    int lastApplied = 0;
+    std::vector<int> nextIndex;
+    std::vector<int> matchIndex;
 };
 
 }

@@ -1,22 +1,25 @@
 #pragma once
-#include <atomic>
-#include <thread>
-#include <condition_variable>
-#include <optional>
-#include <netinet/in.h>
-#include <vector>
+#include <initializer_list>
 #include <string>
+#include <atomic>
+#include <condition_variable>
+#include <netinet/in.h>
+#include <optional>
+#include <vector>
 
 namespace raft {
-
-// Raft roles
-enum Role { Follower, Candidate, Leader };
 
 enum MessageType {
     RequestVote,
     AppendEntries,
-    Received,
+    VoteReceived,
     AppendEntriesReceived
+};
+
+enum Role {
+    Follower,
+    Candidate,
+    Leader
 };
 
 struct Message {
@@ -24,72 +27,68 @@ struct Message {
     int term;
 };
 
-struct RequestVoteMessage : Message {
-    RequestVoteMessage() : Message{RequestVote} {}
-};
-
 struct LogEntry {
     int term;
     std::string command;
 };
 
+struct RequestVoteMessage : Message {
+    RequestVoteMessage() : Message{RequestVote} {}
+};
+
+struct VoteReceivedMessage : Message {
+    VoteReceivedMessage() : Message{VoteReceived} {}
+};
+
 struct AppendEntriesMessage : Message {
     AppendEntriesMessage() : Message{AppendEntries} {}
-    int prevLogIndex;
-    int prevLogTerm;
-    int leaderCommit;
-    size_t entryCount;
-    // For simplicity, fixed-size array; in production, use serialization
+
+    int prev_log_index;
+    int prev_log_term;
+    int leader_commit;
+    size_t entry_count;
     LogEntry entries[10];
 };
 
-struct ReceivedMessage : Message {
-    ReceivedMessage() : Message{Received} {}
-};
+struct AppendEntriesReceivedMessage : Message {
+    AppendEntriesReceivedMessage() : Message{AppendEntriesReceived} {}
 
-struct AppendEntriesResponseMessage : Message {
-    AppendEntriesResponseMessage() : Message{AppendEntriesReceived} {}
     bool success;
-    int matchIndex;
 };
 
 class Node {
 public:
-    Node(std::vector<std::string> peers);
-    void run();
+    Node(std::initializer_list<std::string> peers);
+    void operator()();
 
 private:
     void follower_loop();
     void candidate_loop();
     void leader_loop();
 
-    void send_msg(in_addr_t ip, Message *msg, size_t length);
+    void send_msg(in_addr_t ip, Message*, size_t);
 
     void listen();
 
     void reset_timeout();
-    static in_addr_t get_ip();
-    bool is_majority();
 
-    void handle_request_vote();
-    void handle_received();
-    void handle_append_entries();
+    static in_addr_t get_ip();
 
     in_addr_t ip;
-    std::vector<in_addr_t> peerIps;
+    std::vector<in_addr_t> peers;
     std::atomic<Role> role;
-    std::atomic<int> currentTerm;
-    std::atomic<std::optional<in_addr_t>> votedFor;
+    std::atomic<size_t> cur_term;
+    std::atomic<std::optional<in_addr_t>> voted_for;
+    int server_sock;
     std::mutex mtx;
     std::condition_variable cv;
-    int serverSock;
-    std::thread listenerThread;
-    int nodesReceived;
-    std::chrono::steady_clock::time_point electionDeadline;
+    std::atomic<size_t> votes_received;
+    std::atomic<size_t> commits_received;
+    std::chrono::steady_clock::time_point election_deadline;
 
     // Log replication state
     std::vector<LogEntry> log;
-    int commitIndex = 0;
+    int commit_idx;
     int lastApplied = 0;
     std::vector<int> nextIndex;
     std::vector<int> matchIndex;

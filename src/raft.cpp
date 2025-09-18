@@ -9,7 +9,7 @@
 using namespace raft;
 
 Node::Node(std::initializer_list<std::string> peerIps)
-    : ip{get_ip()}, role{Follower}, voted_for{std::nullopt} {
+    : ip{get_ip()}, role{Follower} {
     for (const auto& peer : peerIps) {
         struct addrinfo hints{}, *res = nullptr;
         hints.ai_family = AF_INET;
@@ -70,22 +70,22 @@ void Node::listen() {
         socklen_t fromlen = sizeof(from);
         Message msg;
         if (recvfrom(server_sock, &msg, sizeof(msg), MSG_PEEK, reinterpret_cast<sockaddr*>(&from), &fromlen) == 0) continue;
-        if (msg.term > cur_term) {
-            cur_term = msg.term;
+        if (msg.term > currentTerm) {
+            currentTerm = msg.term;
             role = Follower;
-            voted_for = std::nullopt;
+            votedFor = std::nullopt;
             reset_timeout();
         }
 
         if (msg.type == RequestVote) {
             RequestVoteMessage msg;
             if (recv(server_sock, &msg, sizeof(msg), 0) > 0) {
-                if (role == Follower && !voted_for.load().has_value()) {
+                if (role == Follower && !votedFor.load().has_value()) {
                     spdlog::info("Sending a vote");
-                    voted_for = from.sin_addr.s_addr;
+                    votedFor = from.sin_addr.s_addr;
                     reset_timeout();
                     VoteReceivedMessage msg;
-                    send_msg(voted_for.load().value(), &msg, sizeof(msg));
+                    send_msg(votedFor.load().value(), &msg, sizeof(msg));
                 }
             }
         } else if (msg.type == VoteReceived) {
@@ -97,8 +97,16 @@ void Node::listen() {
             AppendEntriesMessage msg;
             if (recv(server_sock, &msg, sizeof(msg), 0) > 0) {
                 reset_timeout();
-                AppendEntriesReceivedMessage msg;
-                send_msg(from.sin_addr.s_addr, &msg, sizeof(msg));
+                AppendEntriesReceivedMessage response;
+                if (msg.term < currentTerm) {
+                    response.success = false;
+                    send_msg(from.sin_addr.s_addr, &msg, sizeof(msg));
+                } else if (msg.prevLogIndex != 0) {
+                    if (!(msg.prevLogIndex <= log.size() && msg.prevLogTerm != log[msg.prevLogIndex - 1].term)) {
+                        response.success = false;
+                        send_msg(from.sin_addr.s_addr, &msg, sizeof(msg));
+                    }
+                }
             }
         } else if (msg.type == AppendEntriesReceived)
             AppendEntriesReceivedMessage msg;
@@ -109,7 +117,7 @@ void Node::listen() {
 }
 
 void Node::send_msg(in_addr_t ip, Message *msg, size_t length) {
-    msg->term = cur_term;
+    msg->term = currentTerm;
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in dest = { 0 };
     dest.sin_port = htons(5000);
@@ -130,8 +138,9 @@ void Node::follower_loop() {
 
 void Node::candidate_loop() {
     spdlog::info("This node is now a candidate");
-    cur_term++;
+    currentTerm++;
     votes_received = 1;
+    votedFor = std::nullopt;
 
     RequestVoteMessage msg;
     for (auto peer : peers)
@@ -165,19 +174,18 @@ void Node::leader_loop() {
         for (size_t i = 0; i < peers.size(); i++) {
             if (peers[i] == ip) continue;
             AppendEntriesMessage msg;
-            msg.prev_log_index = nextIndex[i] - 1;
+            msg.prevLogIndex = nextIndex[i] - 1;
             send_msg(peers[i], &msg, sizeof(msg));
         }
         {
             std::unique_lock<std::mutex> lock{mtx};
             cv.wait_for(lock, std::chrono::milliseconds{150}, [this] { return commits_received > peers.size() / 2; });
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds{300});
         spdlog::info("AppendEntries was committed");
     }
 }
 
 void Node::reset_timeout() {
-    std::mt19937 rng;
+    std::mt19937 rng{std::random_device{}()};
     election_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{std::uniform_int_distribution<size_t>{500, 1000}(rng)};
 }

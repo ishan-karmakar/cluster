@@ -29,25 +29,29 @@ struct Message {
 
 struct LogEntry {
     int term;
-    std::string command;
 };
 
 struct RequestVoteMessage : Message {
     RequestVoteMessage() : Message{RequestVote} {}
+
+    in_addr_t candidateId;
+    size_t lastLogIndex;
+    size_t lastLogTerm;
 };
 
 struct VoteReceivedMessage : Message {
     VoteReceivedMessage() : Message{VoteReceived} {}
+
+    bool voteGranted;
 };
 
 struct AppendEntriesMessage : Message {
     AppendEntriesMessage() : Message{AppendEntries} {}
 
-    int prev_log_index;
-    int prev_log_term;
-    int leader_commit;
-    size_t entry_count;
-    LogEntry entries[10];
+    in_addr_t leaderId;
+    size_t prevLogIndex;
+    size_t prevLogTerm;
+    size_t leaderCommit;
 };
 
 struct AppendEntriesReceivedMessage : Message {
@@ -77,21 +81,21 @@ private:
     in_addr_t ip;
     std::vector<in_addr_t> peers;
     std::atomic<Role> role;
-    std::atomic<size_t> cur_term;
-    std::atomic<std::optional<in_addr_t>> voted_for;
     int server_sock;
     std::mutex mtx;
     std::condition_variable cv;
     std::atomic<size_t> votes_received;
     std::atomic<size_t> commits_received;
     std::chrono::steady_clock::time_point election_deadline;
-
-    // Log replication state
+    
+    // Raft states
+    std::atomic<size_t> currentTerm;
+    std::atomic<std::optional<in_addr_t>> votedFor;
     std::vector<LogEntry> log;
-    int commit_idx;
-    int lastApplied = 0;
-    std::vector<int> nextIndex;
-    std::vector<int> matchIndex;
+    std::atomic<size_t> commitIndex;
+    std::atomic<size_t> lastApplied;
+    std::vector<size_t> nextIndex;
+    std::vector<size_t> matchIndex;
 };
 
 }

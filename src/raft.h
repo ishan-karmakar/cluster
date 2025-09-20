@@ -6,10 +6,11 @@
 #include <netinet/in.h>
 #include <optional>
 #include <vector>
+#include <unordered_map>
 
 namespace raft {
 
-enum MessageType {
+enum RPCType {
     RequestVote,
     AppendEntries,
     VoteReceived,
@@ -22,8 +23,8 @@ enum Role {
     Leader
 };
 
-struct Message {
-    MessageType type;
+struct RPC {
+    RPCType type;
     int term;
 };
 
@@ -31,22 +32,22 @@ struct LogEntry {
     int term;
 };
 
-struct RequestVoteMessage : Message {
-    RequestVoteMessage() : Message{RequestVote} {}
+struct RequestVoteRPC : RPC {
+    RequestVoteRPC() : RPC{RequestVote} {}
 
     in_addr_t candidateId;
     size_t lastLogIndex;
     size_t lastLogTerm;
 };
 
-struct VoteReceivedMessage : Message {
-    VoteReceivedMessage() : Message{VoteReceived} {}
+struct VoteReceivedRPC : RPC {
+    VoteReceivedRPC() : RPC{VoteReceived} {}
 
     bool voteGranted;
 };
 
-struct AppendEntriesMessage : Message {
-    AppendEntriesMessage() : Message{AppendEntries} {}
+struct AppendEntriesRPC : RPC {
+    AppendEntriesRPC() : RPC{AppendEntries} {}
 
     in_addr_t leaderId;
     size_t prevLogIndex;
@@ -54,10 +55,11 @@ struct AppendEntriesMessage : Message {
     size_t leaderCommit;
 };
 
-struct AppendEntriesReceivedMessage : Message {
-    AppendEntriesReceivedMessage() : Message{AppendEntriesReceived} {}
+struct AppendEntriesReceivedRPC : RPC {
+    AppendEntriesReceivedRPC() : RPC{AppendEntriesReceived} {}
 
     bool success;
+    size_t nextIndex;
 };
 
 class Node {
@@ -70,7 +72,7 @@ private:
     void candidate_loop();
     void leader_loop();
 
-    void send_msg(in_addr_t ip, Message*, size_t);
+    void send_msg(in_addr_t ip, RPC*, size_t);
 
     void listen();
 
@@ -94,8 +96,8 @@ private:
     std::vector<LogEntry> log;
     std::atomic<size_t> commitIndex;
     std::atomic<size_t> lastApplied;
-    std::vector<size_t> nextIndex;
-    std::vector<size_t> matchIndex;
+    std::unordered_map<in_addr_t, size_t> nextIndex;
+    std::unordered_map<in_addr_t, size_t> matchIndex;
 };
 
 }

@@ -64,11 +64,10 @@ void Node::listen() {
     addr.sin_port = htons(5000);
     addr.sin_addr.s_addr=  INADDR_ANY;
     bind(server_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-    Message msg;
+    RPC msg;
     while (true) {
         sockaddr_in from;
         socklen_t fromlen = sizeof(from);
-        Message msg;
         if (recvfrom(server_sock, &msg, sizeof(msg), MSG_PEEK, reinterpret_cast<sockaddr*>(&from), &fromlen) == 0) continue;
         if (msg.term > currentTerm) {
             currentTerm = msg.term;
@@ -78,45 +77,81 @@ void Node::listen() {
         }
 
         if (msg.type == RequestVote) {
-            RequestVoteMessage msg;
+            RequestVoteRPC msg;
             if (recv(server_sock, &msg, sizeof(msg), 0) > 0) {
                 if (role == Follower && !votedFor.load().has_value()) {
-                    spdlog::info("Sending a vote");
-                    votedFor = from.sin_addr.s_addr;
-                    reset_timeout();
-                    VoteReceivedMessage msg;
-                    send_msg(votedFor.load().value(), &msg, sizeof(msg));
+                    VoteReceivedRPC response;
+                    if (msg.term < currentTerm)
+                        response.voteGranted = false;
+                    else {
+                        response.voteGranted = true;
+                        votedFor = from.sin_addr.s_addr;
+                        reset_timeout();
+                    }
+                    send_msg(from.sin_addr.s_addr, &response, sizeof(response));
                 }
             }
         } else if (msg.type == VoteReceived) {
-            spdlog::info("Received a vote");
-            VoteReceivedMessage msg;
-            if (recv(server_sock, &msg, sizeof(msg), 0) > 0)
+            VoteReceivedRPC msg;
+            if (recv(server_sock, &msg, sizeof(msg), 0) > 0 && msg.voteGranted)
                 votes_received++;
         } else if (msg.type == AppendEntries) {
-            AppendEntriesMessage msg;
+            AppendEntriesRPC msg;
             if (recv(server_sock, &msg, sizeof(msg), 0) > 0) {
                 reset_timeout();
-                AppendEntriesReceivedMessage response;
-                if (msg.term < currentTerm) {
+                AppendEntriesReceivedRPC response;
+                if (msg.term < currentTerm)
                     response.success = false;
-                    send_msg(from.sin_addr.s_addr, &msg, sizeof(msg));
-                } else if (msg.prevLogIndex != 0) {
-                    if (!(msg.prevLogIndex <= log.size() && msg.prevLogTerm != log[msg.prevLogIndex - 1].term)) {
-                        response.success = false;
-                        send_msg(from.sin_addr.s_addr, &msg, sizeof(msg));
+                else if (msg.prevLogIndex == 0)
+                    response.success = true;
+                else if (msg.prevLogIndex > log.size())
+                    response.success = false;
+                else if (msg.prevLogTerm != log[msg.prevLogIndex - 1].term)
+                    response.success = true;
+                else
+                    response.success = false;
+                response.nextIndex = log.size();
+                send_msg(from.sin_addr.s_addr, &response, sizeof(response));
+            }
+        } else if (msg.type == AppendEntriesReceived) {
+            AppendEntriesReceivedRPC msg;
+            if (recv(server_sock, &msg, sizeof(msg), 0) > 0) {
+                if (msg.success) {
+                    nextIndex[from.sin_addr.s_addr] = msg.nextIndex;
+                    matchIndex[from.sin_addr.s_addr] = msg.nextIndex;
+                    for (size_t i = log.size(); i > commitIndex; i--) {
+                        size_t count = 1;
+                        for (auto mi : matchIndex)
+                            if (mi.second >= i) count++;
+                        if (count > peers.size() / 2 && log[i - 1].term == currentTerm) {
+                            commitIndex = i;
+                            break;
+                        }
                     }
+                } else {
+                    nextIndex[from.sin_addr.s_addr]--;
+                    // If there are log entries that haven't been replicated on the peer, send those
+                    in_addr_t peer = from.sin_addr.s_addr;
+                    size_t entriesToSend = log.size() - nextIndex[peer];
+                    spdlog::info("Need to send {} entries to peer {}", entriesToSend, peer);
+                    AppendEntriesRPC msg;
+                    if (nextIndex[peer]) {
+                        msg.prevLogIndex = nextIndex[peer] - 1;
+                        msg.prevLogTerm = log[msg.prevLogIndex - 1].term;
+                    } else {
+                        msg.prevLogIndex = 0;
+                        msg.prevLogTerm = 0;
+                    }
+                    msg.leaderCommit = commitIndex;
+                    send_msg(peer, &msg, sizeof(msg));
                 }
             }
-        } else if (msg.type == AppendEntriesReceived)
-            AppendEntriesReceivedMessage msg;
-            if (recv(server_sock, &msg, sizeof(msg), 0) > 0)
-                commits_received++;
+        }
         cv.notify_all();
     }
 }
 
-void Node::send_msg(in_addr_t ip, Message *msg, size_t length) {
+void Node::send_msg(in_addr_t ip, RPC *msg, size_t length) {
     msg->term = currentTerm;
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     struct sockaddr_in dest = { 0 };
@@ -142,7 +177,7 @@ void Node::candidate_loop() {
     votes_received = 1;
     votedFor = std::nullopt;
 
-    RequestVoteMessage msg;
+    RequestVoteRPC msg;
     for (auto peer : peers)
         if (peer != ip) send_msg(peer, &msg, sizeof(msg));
 
@@ -164,24 +199,39 @@ void Node::candidate_loop() {
 
 void Node::leader_loop() {
     spdlog::info("This node is now the leader");
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        nextIndex.assign(peers.size(), log.size());
-        matchIndex.assign(peers.size(), 0);
+    for (in_addr_t peer : peers) {
+        nextIndex[peer] = log.size();
+        matchIndex[peer] = 0;
     }
     while (role == Leader) {
         commits_received = 1;
-        for (size_t i = 0; i < peers.size(); i++) {
-            if (peers[i] == ip) continue;
-            AppendEntriesMessage msg;
-            msg.prevLogIndex = nextIndex[i] - 1;
-            send_msg(peers[i], &msg, sizeof(msg));
+        for (in_addr_t peer : peers) {
+            if (peer == ip) continue;
+            // If there are log entries that haven't been replicated on the peer, send those
+            size_t entriesToSend = log.size() - nextIndex[peer];
+            spdlog::info("Need to send {} entries to peer {}", entriesToSend, peer);
+            AppendEntriesRPC msg;
+            if (nextIndex[peer]) {
+                msg.prevLogIndex = nextIndex[peer] - 1;
+                msg.prevLogTerm = log[msg.prevLogIndex - 1].term;
+            } else {
+                msg.prevLogIndex = 0;
+                msg.prevLogTerm = 0;
+            }
+            msg.leaderCommit = commitIndex;
+            send_msg(peer, &msg, sizeof(msg));
         }
-        {
-            std::unique_lock<std::mutex> lock{mtx};
-            cv.wait_for(lock, std::chrono::milliseconds{150}, [this] { return commits_received > peers.size() / 2; });
-        }
-        spdlog::info("AppendEntries was committed");
+        std::this_thread::sleep_for(std::chrono::milliseconds{150});
+        // for (size_t i = log.size(); i > commitIndex; i--) {
+        //     size_t count = 1;
+        //     for (auto mi : matchIndex)
+        //         if (mi >= i) count++;
+        //     if (count > peers.size() / 2 && log[i - 1].term == currentTerm) {
+        //         commitIndex = i;
+        //         break;
+        //     }
+        // }
+        // spdlog::info("AppendEntries was committed");
     }
 }
 

@@ -25,11 +25,11 @@ enum Role {
 
 struct RPC {
     RPCType type;
-    int term;
+    size_t term;
 };
 
 struct LogEntry {
-    int term;
+    size_t term;
 };
 
 struct RequestVoteRPC : RPC {
@@ -87,7 +87,6 @@ private:
     std::mutex mtx;
     std::condition_variable cv;
     std::atomic<size_t> votes_received;
-    std::atomic<size_t> commits_received;
     std::chrono::steady_clock::time_point election_deadline;
     
     // Raft states

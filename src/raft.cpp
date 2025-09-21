@@ -106,11 +106,14 @@ void Node::listen() {
                     response.success = true;
                 else if (msg.prevLogIndex > log.size())
                     response.success = false;
-                else if (msg.prevLogTerm != log[msg.prevLogIndex - 1].term)
+                else if (msg.prevLogTerm == log[msg.prevLogIndex - 1].term)
                     response.success = true;
                 else
                     response.success = false;
+                if (response.success)
+                    log.push_back(LogEntry{ .term = msg.term });
                 response.nextIndex = log.size();
+                spdlog::info("{}", response.success);
                 send_msg(from.sin_addr.s_addr, &response, sizeof(response));
             }
         } else if (msg.type == AppendEntriesReceived) {
@@ -130,20 +133,6 @@ void Node::listen() {
                     }
                 } else {
                     nextIndex[from.sin_addr.s_addr]--;
-                    // If there are log entries that haven't been replicated on the peer, send those
-                    in_addr_t peer = from.sin_addr.s_addr;
-                    size_t entriesToSend = log.size() - nextIndex[peer];
-                    spdlog::info("Need to send {} entries to peer {}", entriesToSend, peer);
-                    AppendEntriesRPC msg;
-                    if (nextIndex[peer]) {
-                        msg.prevLogIndex = nextIndex[peer] - 1;
-                        msg.prevLogTerm = log[msg.prevLogIndex - 1].term;
-                    } else {
-                        msg.prevLogIndex = 0;
-                        msg.prevLogTerm = 0;
-                    }
-                    msg.leaderCommit = commitIndex;
-                    send_msg(peer, &msg, sizeof(msg));
                 }
             }
         }
@@ -204,9 +193,10 @@ void Node::leader_loop() {
         matchIndex[peer] = 0;
     }
     while (role == Leader) {
-        commits_received = 1;
+        log.push_back(LogEntry{ .term = currentTerm });
         for (in_addr_t peer : peers) {
             if (peer == ip) continue;
+            // Pretend leader got a request to append log entry
             // If there are log entries that haven't been replicated on the peer, send those
             size_t entriesToSend = log.size() - nextIndex[peer];
             spdlog::info("Need to send {} entries to peer {}", entriesToSend, peer);

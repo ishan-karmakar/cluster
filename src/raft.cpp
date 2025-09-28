@@ -100,9 +100,12 @@ void Node::listen() {
             if (recv(server_sock, &msg, sizeof(msg), 0) > 0) {
                 reset_timeout();
                 AppendEntriesReceivedRPC response;
-                response.success = msg.term >= currentTerm && (msg.prevLogIndex == 0 || (msg.prevLogIndex <= log.size() && msg.prevLogTerm == log[msg.prevLogIndex - 1].term));
+                response.success = msg.term >= currentTerm && (!msg.prevLogIndex || (msg.prevLogIndex <= log.size() && msg.prevLogTerm == log[msg.prevLogIndex.value()].term));
                 if (response.success) {
-                    commitIndex = std::min(msg.leaderCommit, msg.prevLogIndex + 1);
+                    // TODO: Refactor to msg.prevLogIndex + number of entries being sent
+                    commitIndex = msg.leaderCommit;
+                    if (msg.prevLogIndex)
+                        commitIndex = std::min(commitIndex.load(), msg.prevLogIndex.value() + 1);
                     if (msg.containsEntry)
                         log.push_back(msg.entry);
                 }
@@ -123,7 +126,9 @@ void Node::listen() {
                         break;
                     }
                 }
-                if (!msg.success) {
+                if (msg.success) {
+                    spdlog::info("Node successfully applied AppendEntries, commit index is {}", commitIndex.load());
+                } else {
                     spdlog::warn("Node failed to apply AppendEntries");
                 }
             }
@@ -185,30 +190,27 @@ void Node::leader_loop() {
         matchIndex[peer] = 0;
     }
     while (role == Leader) {
-        log.push_back(LogEntry{ .term = currentTerm.load(), .value = 5 });
         for (in_addr_t peer : peers) {
             if (peer == ip) continue;
             size_t entriesToSend = log.size() - nextIndex[peer];
-            spdlog::info("Log contains {} entries, node has {} entries", log.size(), nextIndex[peer]);
             AppendEntriesRPC msg;
             msg.containsEntry = entriesToSend > 0;
             if (msg.containsEntry)
                 msg.entry = log[nextIndex[peer]];
+            msg.prevLogIndex = std::nullopt;
             if (nextIndex[peer]) {
                 msg.prevLogIndex = nextIndex[peer] - 1;
-                msg.prevLogTerm = log[msg.prevLogIndex - 1].term;
-            } else {
-                msg.prevLogIndex = 0;
-                msg.prevLogTerm = 0;
+                msg.prevLogTerm = log[msg.prevLogIndex.value()].term;
             }
             msg.leaderCommit = commitIndex;
             send_msg(peer, &msg, sizeof(msg));
         }
         {
             std::unique_lock<std::mutex> lock{mtx};
-            cv.wait_for(lock, std::chrono::milliseconds{100}, [this] { return commitIndex == log.size(); });
+            if (!cv.wait_for(lock, std::chrono::milliseconds{100}, [this] { return commitIndex == log.size(); }))
+                spdlog::warn("Leader timed out while waiting for commit confirmation");
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
     }
 }
 

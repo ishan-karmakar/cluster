@@ -50,7 +50,7 @@ struct VoteReceivedRPC : RPC {
 struct AppendEntriesRPC : RPC {
     AppendEntriesRPC() : RPC{AppendEntries} {}
 
-    size_t prevLogIndex;
+    std::optional<size_t> prevLogIndex;
     size_t prevLogTerm;
     size_t leaderCommit;
     bool containsEntry;

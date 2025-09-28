@@ -9,7 +9,7 @@
 using namespace raft;
 
 Node::Node(std::initializer_list<std::string> peerIps)
-    : ip{get_ip()}, role{Follower} {
+    : ip{get_ip()}, role{Follower}, commitIndex{0} {
     for (const auto& peer : peerIps) {
         struct addrinfo hints{}, *res = nullptr;
         hints.ai_family = AF_INET;
@@ -100,39 +100,31 @@ void Node::listen() {
             if (recv(server_sock, &msg, sizeof(msg), 0) > 0) {
                 reset_timeout();
                 AppendEntriesReceivedRPC response;
-                if (msg.term < currentTerm)
-                    response.success = false;
-                else if (msg.prevLogIndex == 0)
-                    response.success = true;
-                else if (msg.prevLogIndex > log.size())
-                    response.success = false;
-                else if (msg.prevLogTerm == log[msg.prevLogIndex - 1].term)
-                    response.success = true;
-                else
-                    response.success = false;
-                if (response.success)
-                    log.push_back(LogEntry{ .term = msg.term });
+                response.success = msg.term >= currentTerm && (msg.prevLogIndex == 0 || (msg.prevLogIndex <= log.size() && msg.prevLogTerm == log[msg.prevLogIndex - 1].term));
+                if (response.success) {
+                    commitIndex = std::min(msg.leaderCommit, msg.prevLogIndex + 1);
+                    if (msg.containsEntry)
+                        log.push_back(msg.entry);
+                }
                 response.nextIndex = log.size();
-                spdlog::info("{}", response.success);
                 send_msg(from.sin_addr.s_addr, &response, sizeof(response));
             }
         } else if (msg.type == AppendEntriesReceived) {
             AppendEntriesReceivedRPC msg;
             if (recv(server_sock, &msg, sizeof(msg), 0) > 0) {
-                if (msg.success) {
-                    nextIndex[from.sin_addr.s_addr] = msg.nextIndex;
-                    matchIndex[from.sin_addr.s_addr] = msg.nextIndex;
-                    for (size_t i = log.size(); i > commitIndex; i--) {
-                        size_t count = 1;
-                        for (auto mi : matchIndex)
-                            if (mi.second >= i) count++;
-                        if (count > peers.size() / 2 && log[i - 1].term == currentTerm) {
-                            commitIndex = i;
-                            break;
-                        }
+                nextIndex[from.sin_addr.s_addr] = msg.nextIndex;
+                matchIndex[from.sin_addr.s_addr] = msg.nextIndex;
+                for (size_t i = log.size(); i > commitIndex; i--) {
+                    size_t count = 1;
+                    for (auto mi : matchIndex)
+                        if (mi.second >= i) count++;
+                    if (count > peers.size() / 2 && log[i - 1].term == currentTerm) {
+                        commitIndex = i;
+                        break;
                     }
-                } else {
-                    nextIndex[from.sin_addr.s_addr]--;
+                }
+                if (!msg.success) {
+                    spdlog::warn("Node failed to apply AppendEntries");
                 }
             }
         }
@@ -193,14 +185,15 @@ void Node::leader_loop() {
         matchIndex[peer] = 0;
     }
     while (role == Leader) {
-        log.push_back(LogEntry{ .term = currentTerm });
+        log.push_back(LogEntry{ .term = currentTerm.load(), .value = 5 });
         for (in_addr_t peer : peers) {
             if (peer == ip) continue;
-            // Pretend leader got a request to append log entry
-            // If there are log entries that haven't been replicated on the peer, send those
             size_t entriesToSend = log.size() - nextIndex[peer];
-            spdlog::info("Need to send {} entries to peer {}", entriesToSend, peer);
+            spdlog::info("Log contains {} entries, node has {} entries", log.size(), nextIndex[peer]);
             AppendEntriesRPC msg;
+            msg.containsEntry = entriesToSend > 0;
+            if (msg.containsEntry)
+                msg.entry = log[nextIndex[peer]];
             if (nextIndex[peer]) {
                 msg.prevLogIndex = nextIndex[peer] - 1;
                 msg.prevLogTerm = log[msg.prevLogIndex - 1].term;
@@ -211,17 +204,11 @@ void Node::leader_loop() {
             msg.leaderCommit = commitIndex;
             send_msg(peer, &msg, sizeof(msg));
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds{150});
-        // for (size_t i = log.size(); i > commitIndex; i--) {
-        //     size_t count = 1;
-        //     for (auto mi : matchIndex)
-        //         if (mi >= i) count++;
-        //     if (count > peers.size() / 2 && log[i - 1].term == currentTerm) {
-        //         commitIndex = i;
-        //         break;
-        //     }
-        // }
-        // spdlog::info("AppendEntries was committed");
+        {
+            std::unique_lock<std::mutex> lock{mtx};
+            cv.wait_for(lock, std::chrono::milliseconds{100}, [this] { return commitIndex == log.size(); });
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
     }
 }
 

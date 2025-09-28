@@ -30,6 +30,7 @@ struct RPC {
 
 struct LogEntry {
     size_t term;
+    int value;
 };
 
 struct RequestVoteRPC : RPC {
@@ -49,10 +50,11 @@ struct VoteReceivedRPC : RPC {
 struct AppendEntriesRPC : RPC {
     AppendEntriesRPC() : RPC{AppendEntries} {}
 
-    in_addr_t leaderId;
     size_t prevLogIndex;
     size_t prevLogTerm;
     size_t leaderCommit;
+    bool containsEntry;
+    LogEntry entry;
 };
 
 struct AppendEntriesReceivedRPC : RPC {

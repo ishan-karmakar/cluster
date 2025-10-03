@@ -84,7 +84,7 @@ void Node::listen() {
                     if (msg.term < currentTerm)
                         response.voteGranted = false;
                     else {
-                        response.voteGranted = true;
+                        response.voteGranted = true; 
                         votedFor = from.sin_addr.s_addr;
                         reset_timeout();
                     }
@@ -96,18 +96,20 @@ void Node::listen() {
             if (recv(server_sock, &msg, sizeof(msg), 0) > 0 && msg.voteGranted)
                 votes_received++;
         } else if (msg.type == AppendEntries) {
-            AppendEntriesRPC msg;
-            if (recv(server_sock, &msg, sizeof(msg), 0) > 0) {
+            std::unique_ptr<AppendEntriesRPC> msg = std::make_unique<AppendEntriesRPC>();
+            if (!recv(server_sock, msg.get(), sizeof(AppendEntriesRPC), MSG_PEEK)) break;
+            size_t size = sizeof(AppendEntriesRPC) + msg->numEntries * sizeof(LogEntry);
+            msg = std::unique_ptr<AppendEntriesRPC>{static_cast<AppendEntriesRPC*>(operator new(size))};
+            if (recv(server_sock, msg.get(), size, 0) > 0) {
                 reset_timeout();
                 AppendEntriesReceivedRPC response;
-                response.success = msg.term >= currentTerm && (!msg.prevLogIndex || (msg.prevLogIndex <= log.size() && msg.prevLogTerm == log[msg.prevLogIndex.value()].term));
+                response.success = msg->term >= currentTerm && (!msg->prevLogIndex || (msg->prevLogIndex <= log.size() && msg->prevLogTerm == log[msg->prevLogIndex.value()].term));
                 if (response.success) {
-                    // TODO: Refactor to msg.prevLogIndex + number of entries being sent
-                    commitIndex = msg.leaderCommit;
-                    if (msg.prevLogIndex)
-                        commitIndex = std::min(commitIndex.load(), msg.prevLogIndex.value() + 1);
-                    if (msg.containsEntry)
-                        log.push_back(msg.entry);
+                    commitIndex = msg->leaderCommit;
+                    if (msg->prevLogIndex)
+                        commitIndex = std::min(commitIndex.load(), msg->prevLogIndex.value() + msg->numEntries);
+                    for (int i = 0; i < msg->numEntries; i++)
+                        log.push_back(msg->entries[i]);
                 }
                 response.nextIndex = log.size();
                 send_msg(from.sin_addr.s_addr, &response, sizeof(response));
@@ -192,18 +194,20 @@ void Node::leader_loop() {
     while (role == Leader) {
         for (in_addr_t peer : peers) {
             if (peer == ip) continue;
-            size_t entriesToSend = log.size() - nextIndex[peer];
-            AppendEntriesRPC msg;
-            msg.containsEntry = entriesToSend > 0;
-            if (msg.containsEntry)
-                msg.entry = log[nextIndex[peer]];
-            msg.prevLogIndex = std::nullopt;
+            size_t numEntries = log.size() - nextIndex[peer];
+            size_t size = sizeof(AppendEntriesRPC) + sizeof(LogEntry) * numEntries;
+            std::unique_ptr<AppendEntriesRPC> msg{static_cast<AppendEntriesRPC*>(operator new(size))};
+            *msg = {};
+            msg->numEntries = numEntries;
+            for (size_t i = 0; i < numEntries; i++)
+                msg->entries[i] = log[nextIndex[peer] + i];
+            msg->prevLogIndex = std::nullopt;
             if (nextIndex[peer]) {
-                msg.prevLogIndex = nextIndex[peer] - 1;
-                msg.prevLogTerm = log[msg.prevLogIndex.value()].term;
+                msg->prevLogIndex = nextIndex[peer] - 1;
+                msg->prevLogTerm = log[msg->prevLogIndex.value()].term;
             }
-            msg.leaderCommit = commitIndex;
-            send_msg(peer, &msg, sizeof(msg));
+            msg->leaderCommit = commitIndex;
+            send_msg(peer, msg.get(), size);
         }
         {
             std::unique_lock<std::mutex> lock{mtx};

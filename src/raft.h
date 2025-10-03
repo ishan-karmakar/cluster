@@ -53,8 +53,8 @@ struct AppendEntriesRPC : RPC {
     std::optional<size_t> prevLogIndex;
     size_t prevLogTerm;
     size_t leaderCommit;
-    bool containsEntry;
-    LogEntry entry;
+    size_t numEntries;
+    LogEntry entries[0];
 };
 
 struct AppendEntriesReceivedRPC : RPC {

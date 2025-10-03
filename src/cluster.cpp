@@ -1,4 +1,4 @@
-#include "safehouse/raft.h"
+#include "safehouse/cluster.h"
 #include <netdb.h>
 #include <unistd.h>
 #include <random>

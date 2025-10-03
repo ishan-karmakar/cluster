@@ -8,7 +8,8 @@
 #include <vector>
 #include <unordered_map>
 
-namespace raft {
+namespace safehouse {
+namespace cluster {
 
 enum RPCType {
     RequestVote,
@@ -101,4 +102,5 @@ private:
     std::unordered_map<in_addr_t, size_t> matchIndex;
 };
 
+}
 }

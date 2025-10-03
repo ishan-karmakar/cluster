@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
-project(Cluster CXX)
-add_executable(cluster src/main.cpp src/raft.cpp)
-find_package(spdlog REQUIRED)
-target_link_libraries(cluster PRIVATE spdlog::spdlog)
+project(SafehouseCluster CXX)
+add_library(safehouse-cluster src/raft.cpp)
+add_executable(cluster src/main.cpp)
+target_include_directories(safehouse-cluster PRIVATE include)
+target_include_directories(cluster PRIVATE include)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -13,4 +14,5 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(magic_enum)
 
 # Now, link against the imported target
-target_link_libraries(cluster PRIVATE magic_enum::magic_enum)
+target_link_libraries(safehouse-cluster PRIVATE magic_enum::magic_enum)
+target_link_libraries(cluster PRIVATE safehouse-cluster)

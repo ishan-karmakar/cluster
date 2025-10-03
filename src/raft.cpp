@@ -1,4 +1,4 @@
-#include "raft.h"
+#include "safehouse/raft.h"
 #include <netdb.h>
 #include <unistd.h>
 #include <random>
@@ -6,7 +6,7 @@
 #include <spdlog/spdlog.h>
 #include <magic_enum/magic_enum.hpp>
 
-using namespace raft;
+using namespace safehouse::cluster;
 
 Node::Node(std::initializer_list<std::string> peerIps)
     : ip{get_ip()}, role{Follower}, commitIndex{0} {

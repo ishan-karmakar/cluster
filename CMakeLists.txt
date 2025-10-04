@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.21)
 project(SafehouseCluster CXX)
 
 include(FetchContent)
@@ -11,10 +11,11 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(spdlog)
 
 add_library(safehouse-cluster INTERFACE)
-add_executable(cluster src/main.cpp)
 
 target_include_directories(safehouse-cluster INTERFACE include)
-
-# Now, link against the imported targets
 target_link_libraries(safehouse-cluster INTERFACE spdlog::spdlog)
-target_link_libraries(cluster PRIVATE safehouse-cluster)
+
+if (PROJECT_IS_TOP_LEVEL)
+	add_executable(cluster src/main.cpp)
+	target_link_libraries(cluster safehouse-cluster)
+endif()

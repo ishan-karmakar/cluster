@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <thread>
 #include <random>
+#include <iostream>
 #include <spdlog/spdlog.h>
 #include <unistd.h>
 #include <netdb.h>
@@ -75,7 +76,7 @@ struct AppendEntriesReceivedRPC : RPC {
 template <typename T>
 class Node {
 public:
-    Node(std::initializer_list<std::string> peerIps) : ip{get_ip()}, role{Follower} {
+    Node(std::initializer_list<std::string> peerIps) : ip{get_ip()}, role{Follower}, commitIndex{0} {
         for (const auto& peer : peerIps) {
             struct addrinfo hints{}, *res = nullptr;
             hints.ai_family = AF_INET;
@@ -106,7 +107,7 @@ private:
     void follower_loop() {
         spdlog::info("This node is now a follower");
         while (role == Follower) {
-            std::unique_lock<std::mutex> lock{mtx};
+            std::unique_lock<std::mutex> lock{cvMutex};
             if (cv.wait_until(lock, electionDeadline) == std::cv_status::timeout)
                 role = Candidate;
         }
@@ -125,7 +126,7 @@ private:
         reset_timeout();
         while (role == Candidate) {
             {
-                std::unique_lock<std::mutex> lock{mtx};
+                std::unique_lock<std::mutex> lock{cvMutex};
                 if (cv.wait_until(lock, electionDeadline) == std::cv_status::timeout) {
                     spdlog::warn("Election failed, time to start a new election");
                     break;
@@ -141,12 +142,14 @@ private:
     void leader_loop() {
         spdlog::info("This node is now the leader");
         for (auto peer : peers) {
+            std::lock_guard<std::mutex> lock{stateMutex};
             nextIndex[peer] = log.size();
             matchIndex[peer] = 0;
         }
         while (role == Leader) {
             for (auto peer : peers) {
                 if (peer == ip) continue;
+                std::lock_guard<std::mutex> lock{stateMutex};
                 size_t numEntries = log.size() - nextIndex[peer];
                 size_t size = sizeof(AppendEntriesRPC<T>) + sizeof(LogEntry<T>) * numEntries;
                 std::unique_ptr<AppendEntriesRPC<T>> msg{static_cast<AppendEntriesRPC<T>*>(operator new(size))};
@@ -163,9 +166,13 @@ private:
                 send_msg(peer, msg.get(), size);
             }
             {
-                std::unique_lock<std::mutex> lock{mtx};
-                if (!cv.wait_for(lock, std::chrono::milliseconds{100}, [this] { return commitIndex == log.size(); }))
+                std::unique_lock<std::mutex> lock{cvMutex};
+                if (!cv.wait_for(lock, std::chrono::milliseconds{100}, [this] {
+                    std::lock_guard<std::mutex> lock{stateMutex};
+                    return commitIndex == log.size();
+                })) {
                     spdlog::warn("Leader timed out while waiting for commit confirmation");
+                }
                 std::this_thread::sleep_for(std::chrono::milliseconds{100});
             }
         }
@@ -229,6 +236,7 @@ private:
                     reset_timeout();
                     AppendEntriesReceivedRPC response;
                     response.success = msg->term >= currentTerm && (!msg->prevLogIndex || (msg->prevLogIndex <= log.size() && msg->prevLogTerm == log[msg->prevLogIndex.value()].term));
+                    std::lock_guard<std::mutex> lock{stateMutex};
                     if (response.success) {
                         commitIndex = msg->leaderCommit;
                         if (msg->prevLogIndex)
@@ -242,19 +250,23 @@ private:
             } else if (msg.type == AppendEntriesReceived) {
                 AppendEntriesReceivedRPC msg;
                 if (recv(serverSock, &msg, sizeof(msg), 0) > 0) {
-                    nextIndex[from.sin_addr.s_addr] = msg.nextIndex;
-                    matchIndex[from.sin_addr.s_addr] = msg.nextIndex;
-                    for (size_t i = log.size(); i > commitIndex; i--) {
-                        size_t count = 1;
-                        for (auto mi : matchIndex)
-                            if (mi.second >= i) count++;
-                        if (count > peers.size() / 2 && log[i - 1].term == currentTerm) {
-                            commitIndex = i;
-                            break;
+                    {
+                        std::lock_guard<std::mutex> lock{stateMutex};
+                        nextIndex[from.sin_addr.s_addr] = msg.nextIndex;
+                        matchIndex[from.sin_addr.s_addr] = msg.nextIndex;
+                        for (size_t i = log.size(); i > commitIndex; i--) {
+                            size_t count = 1;
+                            for (auto mi : matchIndex)
+                                if (mi.second >= i) count++;
+                            if (count > peers.size() / 2 && log[i - 1].term == currentTerm) {
+                                commitIndex = i;
+                                break;
+                            }
                         }
                     }
                     if (!msg.success)
                         spdlog::warn("Node failed to apply AppendEntries");
+                    else spdlog::info("Node successfully applied AppendEntries");
                 }
             }
             cv.notify_all();
@@ -286,7 +298,7 @@ private:
     std::vector<in_addr_t> peers;
     std::atomic<Role> role;
     int serverSock;
-    std::mutex mtx;
+    std::mutex cvMutex, stateMutex;
     std::condition_variable cv;
     std::atomic<size_t> votesReceived;
     std::chrono::steady_clock::time_point electionDeadline;
